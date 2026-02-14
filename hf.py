@@ -75,11 +75,12 @@ class HiggsFieldClient:
                     # Restore cookies
                     if 'allCookies' in data:
                         for cookie_data in data['allCookies']:
-                            self.session.cookies.set(
-                                cookie_data['name'],
-                                cookie_data['value'],
-                                domain=cookie_data['domain']
-                            )
+                            kwargs = {}
+                            if cookie_data.get('domain'):
+                                kwargs['domain'] = cookie_data['domain']
+                            if cookie_data.get('path'):
+                                kwargs['path'] = cookie_data['path']
+                            self.session.cookies.set(cookie_data['name'], cookie_data['value'], **kwargs)
                     
                     # Also set the __client cookie specifically
                     if 'clientCookie' in data:
@@ -105,6 +106,17 @@ class HiggsFieldClient:
             self.session.get(WARMUP_URL, timeout=10)
         except Exception as e:
             console.print(f"[yellow]Warning: CF warmup failed: {e}[/yellow]")
+
+    def _clerk_init_client(self):
+        """Initialize Clerk client state/cookies.
+
+        Clerk's frontend API may return `signed_out` for some endpoints unless the
+        client is initialized first.
+        """
+        try:
+            self.session.get(f"{CLERK_BASE}/v1/client", timeout=10)
+        except Exception as e:
+            console.print(f"[yellow]Warning: Clerk init failed: {e}[/yellow]")
     
     def _refresh_jwt(self) -> bool:
         """Refresh JWT token from Clerk"""
@@ -129,52 +141,71 @@ class HiggsFieldClient:
     def login(self, email: str, password: str) -> bool:
         """Login via Clerk email+password with device verification"""
         self._warmup_cloudflare()
+        self._clerk_init_client()
         
-        # Step 1: Create sign-in attempt
+        # Clerk flow: identify first, then attempt factor(s).
         console.print("🔐 Starting login...")
         try:
+            # Step 1: Identify (email)
             url = f"{CLERK_BASE}/v1/client/sign_ins"
-            payload = {
-                "identifier": email,
-                "strategy": "password",
-                "password": password
-            }
-            resp = self.session.post(url, json=payload, timeout=10)
+            resp = self.session.post(url, data={"identifier": email}, timeout=10)
             
             if resp.status_code != 200:
                 console.print(f"[red]Login failed: {resp.text}[/red]")
                 return False
                 
-            sign_in_data = resp.json()
-            sign_in_id = sign_in_data['response']['id']
+            attempt_data = resp.json()
+            sign_in_id = attempt_data['response']['id']
             
-            # Check if device verification is needed
-            if sign_in_data['response']['status'] == 'needs_first_factor':
-                # Already verified, get session
+            # Step 2: Password first factor
+            if attempt_data['response']['status'] == 'needs_first_factor':
+                supported = [
+                    f.get('strategy')
+                    for f in (attempt_data['response'].get('supported_first_factors') or [])
+                    if isinstance(f, dict)
+                ]
+                if 'password' not in supported:
+                    console.print(
+                        f"[red]Password login not available. Supported first factors: {supported}[/red]"
+                    )
+                    return False
+
                 url = f"{CLERK_BASE}/v1/client/sign_ins/{sign_in_id}/attempt_first_factor"
-                payload = {
-                    "strategy": "password",
-                    "password": password
-                }
-                resp = self.session.post(url, json=payload, timeout=10)
+                resp = self.session.post(
+                    url,
+                    data={"strategy": "password", "password": password},
+                    timeout=10,
+                )
                 
                 if resp.status_code != 200:
                     console.print(f"[red]Authentication failed: {resp.text}[/red]")
                     return False
                     
                 attempt_data = resp.json()
-            else:
-                attempt_data = sign_in_data
+                sign_in_id = attempt_data['response']['id']
             
             # Check if we need email verification code
             if attempt_data['response']['status'] == 'needs_second_factor':
                 # Prepare email code verification
                 url = f"{CLERK_BASE}/v1/client/sign_ins/{sign_in_id}/prepare_second_factor"
-                payload = {
-                    "strategy": "email_code",
-                    "email_address_id": attempt_data['response']['supported_second_factors'][0]['email_address_id']
-                }
-                resp = self.session.post(url, json=payload, timeout=10)
+                payload = {"strategy": "email_code"}
+
+                # Some configurations include an email_address_id for second factor.
+                email_address_id = None
+                for factor in (attempt_data['response'].get('supported_second_factors') or []):
+                    if isinstance(factor, dict) and factor.get('strategy') == 'email_code':
+                        email_address_id = factor.get('email_address_id')
+                        break
+                if not email_address_id:
+                    # Fallback: some Clerk responses only include email metadata in supported_first_factors.
+                    for factor in (attempt_data['response'].get('supported_first_factors') or []):
+                        if isinstance(factor, dict) and factor.get('strategy') == 'email_code':
+                            email_address_id = factor.get('email_address_id')
+                            break
+                if email_address_id:
+                    payload["email_address_id"] = email_address_id
+
+                resp = self.session.post(url, data=payload, timeout=10)
                 
                 if resp.status_code != 200:
                     console.print(f"[red]Failed to request verification code: {resp.text}[/red]")
@@ -189,7 +220,7 @@ class HiggsFieldClient:
                     "strategy": "email_code",
                     "code": code
                 }
-                resp = self.session.post(url, json=payload, timeout=10)
+                resp = self.session.post(url, data=payload, timeout=10)
                 
                 if resp.status_code != 200:
                     console.print(f"[red]Verification failed: {resp.text}[/red]")
@@ -221,15 +252,22 @@ class HiggsFieldClient:
                 }
                 
                 # Save all cookies
-                for cookie in self.session.cookies:
+                cookie_jar = getattr(self.session.cookies, "jar", None) or self.session.cookies
+                for cookie in cookie_jar:
+                    if not hasattr(cookie, "name"):
+                        continue
                     session_data['allCookies'].append({
                         'name': cookie.name,
                         'value': cookie.value,
-                        'domain': cookie.domain
+                        'domain': getattr(cookie, 'domain', None),
+                        'path': getattr(cookie, 'path', None),
                     })
                 
                 # Get __client cookie specifically
-                client_cookie = self.session.cookies.get('__client', domain='.clerk.higgsfield.ai')
+                client_cookie = (
+                    self.session.cookies.get('__client', domain='.clerk.higgsfield.ai')
+                    or self.session.cookies.get('__client')
+                )
                 if client_cookie:
                     session_data['clientCookie'] = client_cookie
                 
