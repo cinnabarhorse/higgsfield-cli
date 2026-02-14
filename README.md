@@ -377,6 +377,20 @@ hf login
 
 ---
 
+### Proxy / Corporate Networks
+
+If you're behind a proxy, set one of:
+- `HF_PROXY` (applies to both HTTP + HTTPS)
+- `HF_HTTP_PROXY` / `HF_HTTPS_PROXY`
+- `HTTP_PROXY` / `HTTPS_PROXY` (or lowercase variants)
+
+**Example:**
+```bash
+HF_PROXY=http://127.0.0.1:8080 hf status
+```
+
+---
+
 ### "Verification code sent to..." but no email arrives
 
 **Cause:** Email in spam or Clerk rate limiting.
@@ -460,7 +474,7 @@ Contributions are welcome! Areas for improvement:
 - [ ] Implement input image upload for Flux-2, Nano Banana models
 - [ ] Add batch generation support
 - [ ] Implement video generation commands
-- [ ] Add proxy support for additional CF bypass
+- [x] Add proxy support for additional CF bypass
 - [ ] Better error messages and retry logic
 - [ ] Configuration file for defaults
 - [ ] Export history to JSON/CSV
