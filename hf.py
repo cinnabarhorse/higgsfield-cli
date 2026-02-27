@@ -46,8 +46,30 @@ MODELS = {
         "endpoint": "/jobs/text2image-gpt",
         "name": "GPT Image",
         "description": "OpenAI-based generation"
-    }
+    },
+    # Nano Banana Pro (NBP) / Nano Banana 2
+    "nbp": {
+        "endpoint": "/jobs/nano-banana-2",
+        "name": "Nano Banana Pro",
+        "description": "Nano Banana (input_images required)",
+        "requires_input_images": True,
+    },
 }
+
+
+def _normalized_model_id(model: str) -> str:
+    # Keep backwards/alias behavior in one place.
+    m = (model or "").strip().lower()
+    if m in (
+        "nano-banana",
+        "nano_banana",
+        "nano-banana-2",
+        "nano_banana_2",
+        "nano-banana-pro",
+        "nano_banana_pro",
+    ):
+        return "nbp"
+    return m
 
 
 class HiggsFieldClient:
@@ -302,6 +324,7 @@ class HiggsFieldClient:
         
         self._warmup_cloudflare()
         
+        model = _normalized_model_id(model)
         model_config = MODELS.get(model)
         if not model_config:
             console.print(f"[red]Unknown model: {model}[/red]")
@@ -321,6 +344,10 @@ class HiggsFieldClient:
         
         if seed is not None:
             payload["params"]["seed"] = seed
+
+        if model_config.get("requires_input_images"):
+            # Some endpoints validate that the field exists even if empty.
+            payload["params"].setdefault("input_images", [])
         
         # Submit generation job
         console.print(f"🎨 Generating: [cyan]{prompt}[/cyan]")
@@ -480,7 +507,7 @@ def login(email: str, password: str):
 
 @cli.command()
 @click.argument('prompt')
-@click.option('--model', '-m', default='z-image', help='Model to use (z-image, soul, flux-2, gpt)')
+@click.option('--model', '-m', default='z-image', help='Model to use (z-image, soul, flux-2, gpt, nbp)')
 @click.option('--width', '-w', default=1024, help='Image width')
 @click.option('--height', '-h', default=1024, help='Image height')
 @click.option('--aspect-ratio', '-a', default='1:1', help='Aspect ratio (1:1, 16:9, 9:16, etc)')
@@ -501,7 +528,7 @@ def generate(prompt: str, model: str, width: int, height: int, aspect_ratio: str
 # Alias for generate
 @cli.command()
 @click.argument('prompt')
-@click.option('--model', '-m', default='z-image', help='Model to use')
+@click.option('--model', '-m', default='z-image', help='Model to use (z-image, soul, flux-2, gpt, nbp)')
 @click.option('--width', '-w', default=1024, help='Image width')
 @click.option('--height', '-h', default=1024, help='Image height')
 @click.option('--aspect-ratio', '-a', default='1:1', help='Aspect ratio')

@@ -173,6 +173,7 @@ hf models
 │ soul     │ Soul Standard   │ Stylized generation (style_id)     │
 │ flux-2   │ Flux 2          │ Advanced model (input_images)      │
 │ gpt      │ GPT Image       │ OpenAI-based generation            │
+│ nbp      │ Nano Banana Pro │ Nano Banana (input_images required) │
 └──────────┴─────────────────┴────────────────────────────────────┘
 ```
 
@@ -241,7 +242,7 @@ Higgsfield CLI supports multiple generation endpoints. **Note:** Some models req
 | **soul** | `/jobs/text2image-soul` | Stylized generation | Prompt + `style_id` | ⚠️ Needs style_id param |
 | **flux-2** | `/jobs/flux-2` | Advanced Flux model | Prompt + `input_images` | ⚠️ Needs input images |
 | **gpt** | `/jobs/text2image-gpt` | OpenAI-based generation | Prompt | ✅ Supported |
-| **nano-banana-2** | `/jobs/nano-banana-2` | Nano Banana variant | Prompt + `input_images` | ⚠️ Needs input images |
+| **nano-banana-2** | `/jobs/nano-banana-2` | Nano Banana variant | Prompt (CLI sends empty `input_images`) | ✅ Supported via `--model nbp` |
 | **nano-banana-2-static** | `/jobs/nano-banana-2-static` | Static variant | Prompt + `input_images` | ⚠️ Needs input images |
 | **seedream** | `/jobs/seedream` | Seedream model | Prompt + `input_images` | ⚠️ Needs input images |
 | **seedream-v4-5** | `/jobs/seedream-v4-5` | Seedream v4.5 | Prompt + `input_images` + `quality` | ⚠️ Needs input images |
