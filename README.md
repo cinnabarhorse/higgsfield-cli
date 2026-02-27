@@ -273,10 +273,10 @@ Higgsfield CLI works by replicating the web application's authentication and API
 
 Higgsfield.ai uses [Clerk](https://clerk.com) for authentication. The login process:
 
-1. **Sign-In Attempt:** `POST /v1/client/sign_ins` with email/password
-2. **Device Verification:** On first login, Clerk requires email code verification
-3. **Session Creation:** Successful auth returns a session ID and `__client` cookie
-4. **Token Refresh:** JWTs expire in ~60 seconds, refreshed via `POST /v1/client/sessions/{sid}/tokens`
+1. **Sign-In Identify:** `POST /v1/client/sign_ins` with your email (identifier)
+2. **First Factor (Password):** `POST /v1/client/sign_ins/{id}/attempt_first_factor`
+3. **Device Verification (Optional):** If required, prepare + attempt `email_code` second factor
+4. **Session + Token Refresh:** Successful auth returns a session ID and `__client` cookie; JWTs expire in ~60 seconds, refreshed via `POST /v1/client/sessions/{sid}/tokens`
 
 **Key Insight:** The `__client` cookie on `.clerk.higgsfield.ai` is long-lived (~1 year). Session persistence uses this cookie + session ID.
 
