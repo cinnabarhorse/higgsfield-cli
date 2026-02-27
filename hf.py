@@ -25,6 +25,50 @@ CONFIG_DIR = Path.home() / ".config" / "hf"
 SESSION_FILE = CONFIG_DIR / "session.json"
 IMPERSONATE = "chrome131"
 
+
+def _configure_session_proxies(session: requests.Session) -> None:
+    """
+    Optional proxy support.
+
+    Precedence:
+      1) HF_PROXY (applies to both http/https)
+      2) HF_HTTP_PROXY / HF_HTTPS_PROXY
+      3) HTTP_PROXY / HTTPS_PROXY (and lowercase variants)
+    """
+    proxy_all = (os.environ.get("HF_PROXY") or os.environ.get("hf_proxy") or "").strip()
+    if proxy_all:
+        session.proxies.update({"http": proxy_all, "https": proxy_all})
+        return
+
+    http_proxy = (
+        os.environ.get("HF_HTTP_PROXY")
+        or os.environ.get("http_proxy")
+        or os.environ.get("HTTP_PROXY")
+        or ""
+    ).strip()
+    https_proxy = (
+        os.environ.get("HF_HTTPS_PROXY")
+        or os.environ.get("https_proxy")
+        or os.environ.get("HTTPS_PROXY")
+        or ""
+    ).strip()
+
+    # If only one is set, use it for both; most proxy endpoints support both schemes.
+    if http_proxy and not https_proxy:
+        https_proxy = http_proxy
+    if https_proxy and not http_proxy:
+        http_proxy = https_proxy
+
+    proxies: Dict[str, str] = {}
+    if http_proxy:
+        proxies["http"] = http_proxy
+    if https_proxy:
+        proxies["https"] = https_proxy
+
+    if proxies:
+        session.proxies.update(proxies)
+
+
 # Model configurations
 MODELS = {
     "z-image": {
@@ -77,6 +121,7 @@ class HiggsFieldClient:
     
     def __init__(self):
         self.session = requests.Session(impersonate=IMPERSONATE)
+        _configure_session_proxies(self.session)
         self.jwt: Optional[str] = None
         self.session_id: Optional[str] = None
         self.user_id: Optional[str] = None
