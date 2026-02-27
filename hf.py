@@ -490,6 +490,26 @@ class HiggsFieldClient:
 
         console.print("[green]✓ Image upload complete[/green]")
         return media
+
+    def _build_conditioning_media(self, image_path: str, role: str) -> Optional[Dict[str, Any]]:
+        """Upload image and return media payload entry for kling params.medias."""
+        media = self.upload_media(image_path)
+        if not media:
+            return None
+
+        media_data: Dict[str, Any] = {}
+        for key in ("id", "url", "content_type"):
+            value = media.get(key)
+            if value is not None:
+                media_data[key] = value
+        if not media_data:
+            console.print("[red]Uploaded media response missing required data[/red]")
+            return None
+
+        return {
+            "role": role,
+            "data": media_data,
+        }
     
     def generate(self, prompt: str, model: str = "z-image", width: int = 1024, 
                  height: int = 1024, aspect_ratio: str = "1:1", 
@@ -553,6 +573,7 @@ class HiggsFieldClient:
         use_free_gens: bool = False,
         use_unlim: bool = False,
         start_image: Optional[str] = None,
+        end_image: Optional[str] = None,
         output: Optional[str] = None,
     ) -> Optional[str]:
         """Generate a video with Kling 3.0 and download it."""
@@ -563,23 +584,15 @@ class HiggsFieldClient:
 
         medias = []
         if start_image:
-            media = self.upload_media(start_image)
-            if not media:
+            start_media = self._build_conditioning_media(start_image, role="start_image")
+            if not start_media:
                 return None
-
-            media_data: Dict[str, Any] = {}
-            for key in ("id", "url", "content_type"):
-                value = media.get(key)
-                if value is not None:
-                    media_data[key] = value
-            if not media_data:
-                console.print("[red]Uploaded media response missing required data[/red]")
+            medias.append(start_media)
+        if end_image:
+            end_media = self._build_conditioning_media(end_image, role="end_image")
+            if not end_media:
                 return None
-
-            medias.append({
-                "role": "start_image",
-                "data": media_data,
-            })
+            medias.append(end_media)
 
         payload = {
             "params": {
@@ -723,6 +736,7 @@ def generate(prompt: str, model: str, width: int, height: int, aspect_ratio: str
 @click.option('--use-free-gens', is_flag=True, help='Use free generations if available')
 @click.option('--use-unlim', is_flag=True, help='Use unlimited generation pool if available')
 @click.option('--start-image', type=click.Path(exists=True, dir_okay=False), help='Optional reference image path')
+@click.option('--end-image', type=click.Path(exists=True, dir_okay=False), help='Optional end-frame image path')
 @click.option('--output', '-o', help='Output video path')
 def video(
     prompt: str,
@@ -736,6 +750,7 @@ def video(
     use_free_gens: bool,
     use_unlim: bool,
     start_image: Optional[str],
+    end_image: Optional[str],
     output: Optional[str],
 ):
     """Generate a video from a text prompt (currently Kling 3.0)."""
@@ -760,6 +775,7 @@ def video(
         use_free_gens=use_free_gens,
         use_unlim=use_unlim,
         start_image=start_image,
+        end_image=end_image,
         output=output,
     )
 
