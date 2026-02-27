@@ -178,6 +178,7 @@ hf video "a cool video" [OPTIONS]
 | `--no-enhance-prompt` |  | `false` | Disable prompt enhancement |
 | `--use-free-gens` |  | `false` | Use free generations pool if available |
 | `--use-unlim` |  | `false` | Use unlimited pool if available |
+| `--start-image` |  | None | Optional local reference image path (uploaded automatically) |
 | `--output` | `-o` | Auto | Output file path (default: `hf_<timestamp>.mp4`) |
 
 **Examples:**
@@ -188,6 +189,9 @@ hf video "a cool video"
 
 # Vertical short with sound disabled
 hf video "cinematic drone shot of a volcano" --aspect-ratio 9:16 --duration 5 --sound off
+
+# Use a reference image (image-conditioned video)
+hf video "animate this scene with subtle camera motion" --start-image ./frame.png
 
 # Save to specific file
 hf video "cyberpunk alley with rain" --output ~/Desktop/clip.mp4
@@ -301,6 +305,14 @@ Higgsfield CLI supports multiple generation endpoints. **Note:** Some models req
 | **seedance** | `/jobs/seedance` | SeeDance video model | Input configuration |
 
 **Note:** `kling3_0` is exposed via `hf video`. Other video models still require additional model-specific parameters and are not yet first-class CLI commands.
+
+### Reference Image Upload Flow (`hf video --start-image`)
+
+When `--start-image` is provided, the CLI performs:
+1. `POST /media/batch` to mint a media ID + presigned upload URL
+2. `PUT <upload_url>` with your local image bytes
+3. Best-effort finalize via `POST /media/{id}/upload`
+4. `POST /jobs/v2/kling3_0` with `params.medias=[{role:\"start_image\",data:{id,url,content_type}}]`
 
 ---
 

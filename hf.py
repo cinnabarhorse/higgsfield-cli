@@ -3,6 +3,7 @@
 Higgsfield CLI - Generate images and videos via Higgsfield.ai API
 """
 import json
+import mimetypes
 import os
 import sys
 import time
@@ -392,6 +393,103 @@ class HiggsFieldClient:
         output_path.write_bytes(media_resp.content)
         console.print(f"[green]✓ Saved to: {output_path}[/green]")
         return str(output_path)
+
+    def _create_media_upload(self, content_type: str, source: str = "user_upload") -> Optional[Dict[str, Any]]:
+        """Create media upload target via /media/batch."""
+        url = f"{API_BASE}/media/batch"
+        headers = {"Authorization": f"Bearer {self.jwt}"}
+        payload = {
+            "mimetypes": [content_type],
+            "source": source,
+        }
+        try:
+            resp = self.session.post(url, json=payload, headers=headers, timeout=30)
+            if resp.status_code != 200:
+                console.print(f"[red]Failed to create media upload target: {resp.status_code} - {resp.text}[/red]")
+                return None
+            data = resp.json()
+            if not isinstance(data, list) or not data:
+                console.print("[red]Unexpected media batch response[/red]")
+                return None
+            media = data[0]
+            if not isinstance(media, dict):
+                console.print("[red]Unexpected media item response[/red]")
+                return None
+            return media
+        except Exception as e:
+            console.print(f"[red]Media batch request error: {e}[/red]")
+            return None
+
+    def _upload_media_binary(self, upload_url: str, file_path: Path, content_type: str) -> bool:
+        """Upload local file bytes to pre-signed URL."""
+        try:
+            data = file_path.read_bytes()
+            headers = {"Content-Type": content_type}
+            resp = self.session.put(upload_url, data=data, headers=headers, timeout=120)
+            if resp.status_code not in (200, 201, 204):
+                console.print(f"[red]Media upload failed: {resp.status_code} - {resp.text}[/red]")
+                return False
+            return True
+        except Exception as e:
+            console.print(f"[red]Media upload error: {e}[/red]")
+            return False
+
+    def _finalize_media_upload(self, media_id: str, filename: str) -> Optional[Dict[str, Any]]:
+        """Best-effort finalize call for uploaded media."""
+        url = f"{API_BASE}/media/{media_id}/upload"
+        headers = {"Authorization": f"Bearer {self.jwt}"}
+        payload = {"filename": filename}
+        try:
+            resp = self.session.post(url, json=payload, headers=headers, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict):
+                    return data
+                return None
+            # Not all backend variants require/implement this finalize call.
+            return None
+        except Exception:
+            return None
+
+    def upload_media(self, image_path: str) -> Optional[Dict[str, Any]]:
+        """Upload a local image and return media metadata usable in generation params."""
+        if not self._ensure_auth():
+            return None
+
+        self._warmup_cloudflare()
+
+        path = Path(image_path).expanduser()
+        if not path.exists() or not path.is_file():
+            console.print(f"[red]Image file not found: {path}[/red]")
+            return None
+
+        guessed_content_type, _ = mimetypes.guess_type(str(path))
+        content_type = guessed_content_type or "application/octet-stream"
+
+        media = self._create_media_upload(content_type=content_type, source="user_upload")
+        if not media:
+            return None
+
+        upload_url = media.get("upload_url")
+        if not isinstance(upload_url, str) or not upload_url:
+            console.print("[red]Missing upload_url in media response[/red]")
+            return None
+
+        console.print(f"📤 Uploading image: [cyan]{path.name}[/cyan]")
+        if not self._upload_media_binary(upload_url=upload_url, file_path=path, content_type=content_type):
+            return None
+
+        media_id = media.get("id")
+        if isinstance(media_id, str):
+            finalized = self._finalize_media_upload(media_id=media_id, filename=path.name)
+            if isinstance(finalized, dict):
+                # Merge any finalized metadata over original media object.
+                merged = dict(media)
+                merged.update(finalized)
+                media = merged
+
+        console.print("[green]✓ Image upload complete[/green]")
+        return media
     
     def generate(self, prompt: str, model: str = "z-image", width: int = 1024, 
                  height: int = 1024, aspect_ratio: str = "1:1", 
@@ -454,6 +552,7 @@ class HiggsFieldClient:
         enhance_prompt: bool = True,
         use_free_gens: bool = False,
         use_unlim: bool = False,
+        start_image: Optional[str] = None,
         output: Optional[str] = None,
     ) -> Optional[str]:
         """Generate a video with Kling 3.0 and download it."""
@@ -462,6 +561,26 @@ class HiggsFieldClient:
 
         self._warmup_cloudflare()
 
+        medias = []
+        if start_image:
+            media = self.upload_media(start_image)
+            if not media:
+                return None
+
+            media_data: Dict[str, Any] = {}
+            for key in ("id", "url", "content_type"):
+                value = media.get(key)
+                if value is not None:
+                    media_data[key] = value
+            if not media_data:
+                console.print("[red]Uploaded media response missing required data[/red]")
+                return None
+
+            medias.append({
+                "role": "start_image",
+                "data": media_data,
+            })
+
         payload = {
             "params": {
                 "prompt": prompt,
@@ -469,7 +588,7 @@ class HiggsFieldClient:
                 "mode": mode,
                 "sound": sound,
                 "duration": duration,
-                "medias": [],
+                "medias": medias,
                 "multi_shots": False,
                 "multi_prompt": [],
                 "cfg_scale": cfg_scale,
@@ -603,6 +722,7 @@ def generate(prompt: str, model: str, width: int, height: int, aspect_ratio: str
 @click.option('--no-enhance-prompt', is_flag=True, help='Disable prompt enhancement')
 @click.option('--use-free-gens', is_flag=True, help='Use free generations if available')
 @click.option('--use-unlim', is_flag=True, help='Use unlimited generation pool if available')
+@click.option('--start-image', type=click.Path(exists=True, dir_okay=False), help='Optional reference image path')
 @click.option('--output', '-o', help='Output video path')
 def video(
     prompt: str,
@@ -615,6 +735,7 @@ def video(
     no_enhance_prompt: bool,
     use_free_gens: bool,
     use_unlim: bool,
+    start_image: Optional[str],
     output: Optional[str],
 ):
     """Generate a video from a text prompt (currently Kling 3.0)."""
@@ -638,6 +759,7 @@ def video(
         enhance_prompt=not no_enhance_prompt,
         use_free_gens=use_free_gens,
         use_unlim=use_unlim,
+        start_image=start_image,
         output=output,
     )
 
