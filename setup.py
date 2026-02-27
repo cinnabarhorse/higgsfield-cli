@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='higgsfield-cli',
-    version='0.1.0',
+    version='0.1.1',
     py_modules=['hf'],
     install_requires=[
         'curl-cffi>=0.7.0',
@@ -15,6 +15,6 @@ setup(
         ],
     },
     author='Clawdbot',
-    description='CLI tool for generating images via Higgsfield.ai',
+    description='CLI tool for generating images and videos via Higgsfield.ai',
     python_requires='>=3.10',
 )
