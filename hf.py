@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Higgsfield CLI - Generate images via Higgsfield.ai API
+Higgsfield CLI - Generate images and videos via Higgsfield.ai API
 """
 import json
 import os
@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any
+from urllib.parse import urlparse
 
 import click
 from curl_cffi import requests
@@ -46,6 +47,14 @@ MODELS = {
         "endpoint": "/jobs/text2image-gpt",
         "name": "GPT Image",
         "description": "OpenAI-based generation"
+    }
+}
+
+VIDEO_MODELS = {
+    "kling3_0": {
+        "endpoint": "/jobs/v2/kling3_0",
+        "name": "Kling 3.0",
+        "description": "Text-to-video generation"
     }
 }
 
@@ -254,6 +263,135 @@ class HiggsFieldClient:
         
         # Refresh JWT (they expire in ~60s)
         return self._refresh_jwt()
+
+    def _submit_job(self, endpoint: str, payload: Dict[str, Any]) -> Optional[str]:
+        """Submit job and return job_set_id"""
+        try:
+            url = f"{API_BASE}{endpoint}"
+            headers = {"Authorization": f"Bearer {self.jwt}"}
+            resp = self.session.post(url, json=payload, headers=headers, timeout=30)
+
+            if resp.status_code != 200:
+                console.print(f"[red]Generation failed: {resp.status_code} - {resp.text}[/red]")
+                return None
+
+            job_data = resp.json()
+            # API often returns {"id": project_id, "job_sets": [actual_job_set]}
+            if "job_sets" in job_data and len(job_data["job_sets"]) > 0:
+                return job_data["job_sets"][0]["id"]
+            # Fallback for direct job-set response
+            return job_data["id"]
+        except Exception as e:
+            console.print(f"[red]Job submission error: {e}[/red]")
+            return None
+
+    def _poll_job_set(self, job_set_id: str, task_text: str, max_polls: int) -> Optional[Dict[str, Any]]:
+        """Poll job set until completed/failed/timeout"""
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task(task_text, total=None)
+            poll_count = 0
+
+            while poll_count < max_polls:
+                time.sleep(2)
+                poll_count += 1
+
+                # Refresh token periodically
+                if poll_count % 20 == 0:
+                    self._refresh_jwt()
+
+                status_url = f"{API_BASE}/job-sets/{job_set_id}"
+                headers = {"Authorization": f"Bearer {self.jwt}"}
+                status_resp = self.session.get(status_url, headers=headers, timeout=10)
+
+                if status_resp.status_code != 200:
+                    continue
+
+                status_data = status_resp.json()
+                if "jobs" not in status_data or not status_data["jobs"]:
+                    continue
+
+                job_status = status_data["jobs"][0].get("status")
+                if job_status == "completed":
+                    progress.update(task, description="[green]✓ Generation complete![/green]")
+                    return status_data
+                if job_status == "failed":
+                    progress.update(task, description="[red]✗ Generation failed[/red]")
+                    return None
+
+                progress.update(task, description=f"Status: {job_status}...")
+
+            console.print("[yellow]⚠ Timeout waiting for generation[/yellow]")
+            return None
+
+    def _find_first_url(self, value: Any) -> Optional[str]:
+        """Find first URL in nested response object."""
+        if isinstance(value, str):
+            if value.startswith("http://") or value.startswith("https://"):
+                return value
+            return None
+        if isinstance(value, list):
+            for item in value:
+                found = self._find_first_url(item)
+                if found:
+                    return found
+            return None
+        if isinstance(value, dict):
+            for item in value.values():
+                found = self._find_first_url(item)
+                if found:
+                    return found
+            return None
+        return None
+
+    def _extract_result_url(self, status_data: Dict[str, Any]) -> Optional[str]:
+        """Extract media URL from completed job response."""
+        jobs = status_data.get("jobs") or []
+        if not jobs:
+            return None
+        results = jobs[0].get("results") or {}
+        if not isinstance(results, dict):
+            return None
+
+        raw = results.get("raw") or {}
+        if isinstance(raw, dict) and isinstance(raw.get("url"), str):
+            return raw["url"]
+        if isinstance(results.get("url"), str):
+            return results["url"]
+        video = results.get("video") or {}
+        if isinstance(video, dict) and isinstance(video.get("url"), str):
+            return video["url"]
+
+        return self._find_first_url(results)
+
+    def _download_result(self, result_url: str, output: Optional[str], default_ext: str) -> Optional[str]:
+        """Download generated media file."""
+        if output:
+            output_path = Path(output).expanduser()
+            if output_path.suffix == "":
+                output_path = output_path.with_suffix(default_ext)
+        else:
+            output_path = Path.cwd() / f"hf_{int(time.time())}{default_ext}"
+
+        # If URL contains extension, use it unless user explicitly set output path extension.
+        if not output:
+            ext_from_url = Path(urlparse(result_url).path).suffix
+            if ext_from_url:
+                output_path = output_path.with_suffix(ext_from_url)
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        media_resp = self.session.get(result_url, timeout=120)
+        if media_resp.status_code != 200:
+            console.print(f"[red]Failed to download media: {media_resp.status_code}[/red]")
+            return None
+
+        output_path.write_bytes(media_resp.content)
+        console.print(f"[green]✓ Saved to: {output_path}[/green]")
+        return str(output_path)
     
     def generate(self, prompt: str, model: str = "z-image", width: int = 1024, 
                  height: int = 1024, aspect_ratio: str = "1:1", 
@@ -284,93 +422,87 @@ class HiggsFieldClient:
         if seed is not None:
             payload["params"]["seed"] = seed
         
-        # Submit generation job
         console.print(f"🎨 Generating: [cyan]{prompt}[/cyan]")
         
-        try:
-            url = f"{API_BASE}{model_config['endpoint']}"
-            headers = {"Authorization": f"Bearer {self.jwt}"}
-            resp = self.session.post(url, json=payload, headers=headers, timeout=30)
-            
-            if resp.status_code != 200:
-                console.print(f"[red]Generation failed: {resp.status_code} - {resp.text}[/red]")
-                return None
-            
-            job_data = resp.json()
-            # API returns {"id": project_id, "job_sets": [actual_job_set]}
-            if 'job_sets' in job_data and len(job_data['job_sets']) > 0:
-                job_set_id = job_data['job_sets'][0]['id']
-            else:
-                # Fallback for direct job set response
-                job_set_id = job_data['id']
-            
-            # Poll for completion
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console
-            ) as progress:
-                task = progress.add_task("Generating image...", total=None)
-                
-                max_polls = 120  # 2 minutes max
-                poll_count = 0
-                
-                while poll_count < max_polls:
-                    time.sleep(2)
-                    poll_count += 1
-                    
-                    # Refresh token periodically
-                    if poll_count % 20 == 0:
-                        self._refresh_jwt()
-                    
-                    status_url = f"{API_BASE}/job-sets/{job_set_id}"
-                    headers = {"Authorization": f"Bearer {self.jwt}"}
-                    status_resp = self.session.get(status_url, headers=headers, timeout=10)
-                    
-                    if status_resp.status_code != 200:
-                        continue
-                    
-                    status_data = status_resp.json()
-                    job_status = status_data['jobs'][0]['status']
-                    
-                    if job_status == 'completed':
-                        progress.update(task, description="[green]✓ Generation complete![/green]")
-                        
-                        # Download result
-                        result_url = status_data['jobs'][0]['results']['raw']['url']
-                        
-                        # Determine output filename
-                        if output:
-                            output_path = Path(output)
-                        else:
-                            filename = f"hf_{int(time.time())}.png"
-                            output_path = Path.cwd() / filename
-                        
-                        # Download image
-                        img_resp = self.session.get(result_url, timeout=30)
-                        if img_resp.status_code == 200:
-                            output_path.write_bytes(img_resp.content)
-                            console.print(f"[green]✓ Saved to: {output_path}[/green]")
-                            return str(output_path)
-                        else:
-                            console.print(f"[red]Failed to download image: {img_resp.status_code}[/red]")
-                            return None
-                    
-                    elif job_status == 'failed':
-                        progress.update(task, description="[red]✗ Generation failed[/red]")
-                        return None
-                    
-                    else:
-                        progress.update(task, description=f"Status: {job_status}...")
-                
-                console.print("[yellow]⚠ Timeout waiting for generation[/yellow]")
-                return None
-                
-        except Exception as e:
-            console.print(f"[red]Generation error: {e}[/red]")
-            import traceback
-            traceback.print_exc()
+        job_set_id = self._submit_job(model_config["endpoint"], payload)
+        if not job_set_id:
             return None
+
+        status_data = self._poll_job_set(
+            job_set_id=job_set_id,
+            task_text="Generating image...",
+            max_polls=120,  # 2 minutes
+        )
+        if not status_data:
+            return None
+
+        result_url = self._extract_result_url(status_data)
+        if not result_url:
+            console.print("[red]Could not find image URL in job response[/red]")
+            return None
+
+        return self._download_result(result_url, output=output, default_ext=".png")
+
+    def generate_kling3_video(
+        self,
+        prompt: str,
+        aspect_ratio: str = "16:9",
+        duration: int = 5,
+        mode: str = "std",
+        sound: str = "on",
+        cfg_scale: float = 0.5,
+        enhance_prompt: bool = True,
+        use_free_gens: bool = False,
+        use_unlim: bool = False,
+        output: Optional[str] = None,
+    ) -> Optional[str]:
+        """Generate a video with Kling 3.0 and download it."""
+        if not self._ensure_auth():
+            return None
+
+        self._warmup_cloudflare()
+
+        payload = {
+            "params": {
+                "prompt": prompt,
+                "aspect_ratio": aspect_ratio,
+                "mode": mode,
+                "sound": sound,
+                "duration": duration,
+                "medias": [],
+                "multi_shots": False,
+                "multi_prompt": [],
+                "cfg_scale": cfg_scale,
+                "kling_elements": [],
+                "kling_element_ids": [],
+                "multi_shot_mode": "auto",
+                "reference_elements": [],
+                "enhance_prompt": enhance_prompt,
+            },
+            "use_free_gens": use_free_gens,
+            "use_unlim": use_unlim,
+        }
+
+        console.print(f"🎬 Generating video: [cyan]{prompt}[/cyan]")
+
+        job_set_id = self._submit_job(VIDEO_MODELS["kling3_0"]["endpoint"], payload)
+        if not job_set_id:
+            return None
+
+        status_data = self._poll_job_set(
+            job_set_id=job_set_id,
+            task_text="Generating video...",
+            max_polls=450,  # 15 minutes
+        )
+        if not status_data:
+            return None
+
+        result_url = self._extract_result_url(status_data)
+        if not result_url:
+            console.print("[red]Could not find video URL in job response[/red]")
+            return None
+
+        return self._download_result(result_url, output=output, default_ext=".mp4")
     
     def get_account_info(self) -> Optional[Dict[str, Any]]:
         """Get account info and credits balance"""
@@ -422,7 +554,7 @@ class HiggsFieldClient:
 # CLI Commands
 @click.group()
 def cli():
-    """Higgsfield CLI - Generate images via Higgsfield.ai"""
+    """Higgsfield CLI - Generate images and videos via Higgsfield.ai"""
     pass
 
 
@@ -460,6 +592,61 @@ def generate(prompt: str, model: str, width: int, height: int, aspect_ratio: str
         sys.exit(1)
 
 
+@cli.command()
+@click.argument('prompt')
+@click.option('--model', '-m', default='kling3_0', type=click.Choice(list(VIDEO_MODELS.keys())), help='Video model to use')
+@click.option('--aspect-ratio', '-a', default='16:9', help='Aspect ratio (16:9, 9:16, 1:1, etc)')
+@click.option('--duration', '-d', default=5, type=int, help='Duration in seconds')
+@click.option('--mode', default='std', help='Generation mode (e.g. std)')
+@click.option('--sound', type=click.Choice(['on', 'off']), default='on', help='Enable or disable sound')
+@click.option('--cfg-scale', default=0.5, type=float, help='CFG scale')
+@click.option('--no-enhance-prompt', is_flag=True, help='Disable prompt enhancement')
+@click.option('--use-free-gens', is_flag=True, help='Use free generations if available')
+@click.option('--use-unlim', is_flag=True, help='Use unlimited generation pool if available')
+@click.option('--output', '-o', help='Output video path')
+def video(
+    prompt: str,
+    model: str,
+    aspect_ratio: str,
+    duration: int,
+    mode: str,
+    sound: str,
+    cfg_scale: float,
+    no_enhance_prompt: bool,
+    use_free_gens: bool,
+    use_unlim: bool,
+    output: Optional[str],
+):
+    """Generate a video from a text prompt (currently Kling 3.0)."""
+    if duration <= 0:
+        console.print("[red]Duration must be greater than 0[/red]")
+        sys.exit(1)
+
+    client = HiggsFieldClient()
+
+    if model != "kling3_0":
+        console.print(f"[red]Unsupported video model: {model}[/red]")
+        sys.exit(1)
+
+    result = client.generate_kling3_video(
+        prompt=prompt,
+        aspect_ratio=aspect_ratio,
+        duration=duration,
+        mode=mode,
+        sound=sound,
+        cfg_scale=cfg_scale,
+        enhance_prompt=not no_enhance_prompt,
+        use_free_gens=use_free_gens,
+        use_unlim=use_unlim,
+        output=output,
+    )
+
+    if result:
+        sys.exit(0)
+    else:
+        sys.exit(1)
+
+
 # Alias for generate
 @cli.command()
 @click.argument('prompt')
@@ -485,12 +672,15 @@ def gen(prompt: str, model: str, width: int, height: int, aspect_ratio: str, see
 def models():
     """List available models"""
     table = Table(title="Available Models")
+    table.add_column("Kind", style="magenta")
     table.add_column("ID", style="cyan")
     table.add_column("Name", style="green")
     table.add_column("Description", style="white")
     
     for model_id, config in MODELS.items():
-        table.add_row(model_id, config['name'], config['description'])
+        table.add_row("image", model_id, config['name'], config['description'])
+    for model_id, config in VIDEO_MODELS.items():
+        table.add_row("video", model_id, config['name'], config['description'])
     
     console.print(table)
 

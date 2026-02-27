@@ -4,11 +4,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-A powerful command-line tool for generating images via [Higgsfield.ai](https://higgsfield.ai)'s API, built through reverse-engineering their web application.
+A powerful command-line tool for generating images and videos via [Higgsfield.ai](https://higgsfield.ai)'s API, built through reverse-engineering their web application.
 
 ## 🎨 What It Does
 
-Higgsfield CLI (`hf`) lets you generate AI images from your terminal using Higgsfield.ai's free tier. It bypasses Cloudflare protection using TLS fingerprinting and implements the Clerk authentication flow to access generation endpoints directly.
+Higgsfield CLI (`hf`) lets you generate AI images and videos from your terminal using Higgsfield.ai's free tier. It bypasses Cloudflare protection using TLS fingerprinting and implements the Clerk authentication flow to access generation endpoints directly.
 
 **Key Features:**
 - 🔐 Full authentication via Clerk (email/password + device verification)
@@ -22,8 +22,9 @@ Higgsfield CLI (`hf`) lets you generate AI images from your terminal using Higgs
 ## ✨ Features
 
 - **Simple Text-to-Image:** Generate images from prompts in seconds
+- **Text-to-Video (Kling 3.0):** Generate videos from prompts via `/jobs/v2/kling3_0`
 - **Multiple Models:** Access Z-Image, Soul (stylized), Flux-2, GPT-based models, and more
-- **Video Generation:** Support for image-to-video and text-to-video models
+- **Video Generation:** Foundation in place for additional image-to-video and text-to-video models
 - **Customization:** Control dimensions, aspect ratios, seeds for reproducibility
 - **Account Management:** Check credits, view generation history
 - **Session Persistence:** Login once, stored securely in `~/.config/hf/`
@@ -156,9 +157,47 @@ hf generate "stylized portrait" --model soul
 
 ---
 
+### `hf video <prompt>`
+
+Generate a video from a text prompt (currently Kling 3.0).
+
+```bash
+hf video "a cool video" [OPTIONS]
+```
+
+**Options:**
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--model` | `-m` | `kling3_0` | Video model (`kling3_0`) |
+| `--aspect-ratio` | `-a` | `16:9` | Aspect ratio (`16:9`, `9:16`, `1:1`, etc.) |
+| `--duration` | `-d` | `5` | Duration in seconds |
+| `--mode` |  | `std` | Generation mode |
+| `--sound` |  | `on` | Enable/disable sound (`on`/`off`) |
+| `--cfg-scale` |  | `0.5` | CFG scale |
+| `--no-enhance-prompt` |  | `false` | Disable prompt enhancement |
+| `--use-free-gens` |  | `false` | Use free generations pool if available |
+| `--use-unlim` |  | `false` | Use unlimited pool if available |
+| `--output` | `-o` | Auto | Output file path (default: `hf_<timestamp>.mp4`) |
+
+**Examples:**
+
+```bash
+# Basic video generation
+hf video "a cool video"
+
+# Vertical short with sound disabled
+hf video "cinematic drone shot of a volcano" --aspect-ratio 9:16 --duration 5 --sound off
+
+# Save to specific file
+hf video "cyberpunk alley with rain" --output ~/Desktop/clip.mp4
+```
+
+---
+
 ### `hf models`
 
-List all available image generation models.
+List all available generation models.
 
 ```bash
 hf models
@@ -166,14 +205,15 @@ hf models
 
 **Output:**
 ```
-┌──────────┬─────────────────┬────────────────────────────────────┐
-│ ID       │ Name            │ Description                        │
-├──────────┼─────────────────┼────────────────────────────────────┤
-│ z-image  │ Z-Image         │ Simple, fast image generation      │
-│ soul     │ Soul Standard   │ Stylized generation (style_id)     │
-│ flux-2   │ Flux 2          │ Advanced model (input_images)      │
-│ gpt      │ GPT Image       │ OpenAI-based generation            │
-└──────────┴─────────────────┴────────────────────────────────────┘
+┌───────┬───────────┬─────────────────┬────────────────────────────────────┐
+│ Kind  │ ID        │ Name            │ Description                        │
+├───────┼───────────┼─────────────────┼────────────────────────────────────┤
+│ image │ z-image   │ Z-Image         │ Simple, fast image generation      │
+│ image │ soul      │ Soul Standard   │ Stylized generation (style_id)     │
+│ image │ flux-2    │ Flux 2          │ Advanced model (input_images)      │
+│ image │ gpt       │ GPT Image       │ OpenAI-based generation            │
+│ video │ kling3_0  │ Kling 3.0       │ Text-to-video generation           │
+└───────┴───────────┴─────────────────┴────────────────────────────────────┘
 ```
 
 ---
@@ -202,7 +242,7 @@ hf status
 
 ### `hf history`
 
-View your recent image generations.
+View your recent generations.
 
 ```bash
 hf history [--limit N]
@@ -251,6 +291,7 @@ Higgsfield CLI supports multiple generation endpoints. **Note:** Some models req
 
 | Model ID | Endpoint | Description | Input Requirements |
 |----------|----------|-------------|-------------------|
+| **kling3_0** | `/jobs/v2/kling3_0` | Kling 3.0 text-to-video | Prompt + video config |
 | **image2video** | `/jobs/image2video` | Convert image to video | Input image |
 | **kling** | `/jobs/kling` | Kling video model | Input configuration |
 | **veo3** | `/jobs/veo3` | Veo3 video generation | Input configuration |
@@ -259,7 +300,7 @@ Higgsfield CLI supports multiple generation endpoints. **Note:** Some models req
 | **sora2-video** | `/jobs/sora2-video` | Sora 2 video generation | Input configuration |
 | **seedance** | `/jobs/seedance` | SeeDance video model | Input configuration |
 
-**Note:** Video models are accessible via the API but require additional parameters not currently exposed in the CLI. Future versions may add full support.
+**Note:** `kling3_0` is exposed via `hf video`. Other video models still require additional model-specific parameters and are not yet first-class CLI commands.
 
 ---
 
@@ -459,7 +500,8 @@ Contributions are welcome! Areas for improvement:
 - [ ] Add support for `style_id` parameter (Soul models)
 - [ ] Implement input image upload for Flux-2, Nano Banana models
 - [ ] Add batch generation support
-- [ ] Implement video generation commands
+- [x] Implement first-class `kling3_0` video generation command (`hf video`)
+- [ ] Add first-class commands for remaining video models
 - [ ] Add proxy support for additional CF bypass
 - [ ] Better error messages and retry logic
 - [ ] Configuration file for defaults
