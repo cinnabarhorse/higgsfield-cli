@@ -24,7 +24,8 @@ Higgsfield CLI (`hf`) lets you generate AI images and videos from your terminal 
 - **Simple Text-to-Image:** Generate images from prompts in seconds
 - **Text-to-Video (Kling 3.0):** Generate videos from prompts via `/jobs/v2/kling3_0`
 - **Multiple Models:** Access Z-Image, Soul (stylized), Flux-2, GPT-based models, and more
-- **Video Generation:** Foundation in place for additional image-to-video and text-to-video models
+- **Local Image Uploads:** Upload local reference frames for image-conditioned jobs
+- **Advanced Job Submission:** Send captured payloads to additional image and video endpoints with `hf submit`
 - **Customization:** Control dimensions, aspect ratios, seeds for reproducibility
 - **Account Management:** Check credits, view generation history
 - **Session Persistence:** Login once, stored securely in `~/.config/hf/`
@@ -203,6 +204,28 @@ hf video "cyberpunk alley with rain" --output ~/Desktop/clip.mp4
 
 ---
 
+### `hf upload-image <path>`
+
+Upload a local image and print the `media_input` JSON for use in a model payload.
+
+```bash
+hf upload-image ./frame.png
+```
+
+---
+
+### `hf submit`
+
+Submit a model-specific JSON payload to any Higgsfield generation endpoint. JSON without a top-level `params` key is wrapped automatically; pass `--raw` for a complete request body.
+
+```bash
+hf submit --endpoint /jobs/seedance --json-file ./payload.json --output ./result.mp4
+```
+
+Run `hf submit --help` for timeout, polling, inline JSON, and no-download options.
+
+---
+
 ### `hf models`
 
 List all available generation models.
@@ -309,7 +332,7 @@ Higgsfield CLI supports multiple generation endpoints. **Note:** Some models req
 | **sora2-video** | `/jobs/sora2-video` | Sora 2 video generation | Input configuration |
 | **seedance** | `/jobs/seedance` | SeeDance video model | Input configuration |
 
-**Note:** `kling3_0` is exposed via `hf video`. Other video models still require additional model-specific parameters and are not yet first-class CLI commands.
+**Note:** `kling3_0` is exposed via `hf video`. Other models can use `hf submit` with their model-specific payloads.
 
 ### Reference Image Upload Flow (`hf video --start-image/--end-image`)
 
@@ -529,9 +552,10 @@ SOFTWARE.
 Contributions are welcome! Areas for improvement:
 
 - [ ] Add support for `style_id` parameter (Soul models)
-- [ ] Implement input image upload for Flux-2, Nano Banana models
+- [x] Implement local image uploads
 - [ ] Add batch generation support
 - [x] Implement first-class `kling3_0` video generation command (`hf video`)
+- [x] Add generic image/video job submission (`hf submit`)
 - [ ] Add first-class commands for remaining video models
 - [x] Add proxy support for additional CF bypass
 - [ ] Better error messages and retry logic
