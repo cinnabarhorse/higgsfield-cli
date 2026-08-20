@@ -26,6 +26,10 @@ WARMUP_URL = "https://higgsfield.ai"
 CONFIG_DIR = Path.home() / ".config" / "hf"
 SESSION_FILE = CONFIG_DIR / "session.json"
 IMPERSONATE = "chrome131"
+CLERK_QUERY = {
+    "__clerk_api_version": "2025-11-10",
+    "_clerk_js_version": "5.127.2",
+}
 
 
 def _configure_session_proxies(session: requests.Session) -> None:
@@ -194,6 +198,15 @@ class HiggsFieldClient:
             self.session.get(f"{CLERK_BASE}/v1/client", timeout=10)
         except Exception as e:
             console.print(f"[yellow]Warning: Clerk init failed: {e}[/yellow]")
+
+    def _clerk_post(self, path: str, data: Optional[Dict[str, Any]] = None):
+        """Send a request using Clerk's current form-encoded frontend protocol."""
+        return self.session.post(
+            f"{CLERK_BASE}{path}",
+            data=data or {},
+            params=CLERK_QUERY,
+            timeout=10,
+        )
     
     def _refresh_jwt(self) -> bool:
         """Refresh JWT token from Clerk"""
@@ -201,8 +214,9 @@ class HiggsFieldClient:
             return False
             
         try:
-            url = f"{CLERK_BASE}/v1/client/sessions/{self.session_id}/tokens"
-            resp = self.session.post(url, timeout=10)
+            resp = self._clerk_post(
+                f"/v1/client/sessions/{self.session_id}/tokens"
+            )
             
             if resp.status_code == 200:
                 data = resp.json()
@@ -224,8 +238,10 @@ class HiggsFieldClient:
         console.print("🔐 Starting login...")
         try:
             # Step 1: Identify (email)
-            url = f"{CLERK_BASE}/v1/client/sign_ins"
-            resp = self.session.post(url, data={"identifier": email}, timeout=10)
+            resp = self._clerk_post(
+                "/v1/client/sign_ins",
+                {"identifier": email},
+            )
             
             if resp.status_code != 200:
                 console.print(f"[red]Login failed: {resp.text}[/red]")
@@ -247,11 +263,9 @@ class HiggsFieldClient:
                     )
                     return False
 
-                url = f"{CLERK_BASE}/v1/client/sign_ins/{sign_in_id}/attempt_first_factor"
-                resp = self.session.post(
-                    url,
-                    data={"strategy": "password", "password": password},
-                    timeout=10,
+                resp = self._clerk_post(
+                    f"/v1/client/sign_ins/{sign_in_id}/attempt_first_factor",
+                    {"strategy": "password", "password": password},
                 )
                 
                 if resp.status_code != 200:
@@ -264,7 +278,6 @@ class HiggsFieldClient:
             # Check if we need email verification code
             if attempt_data['response']['status'] == 'needs_second_factor':
                 # Prepare email code verification
-                url = f"{CLERK_BASE}/v1/client/sign_ins/{sign_in_id}/prepare_second_factor"
                 payload = {"strategy": "email_code"}
 
                 # Some configurations include an email_address_id for second factor.
@@ -282,7 +295,10 @@ class HiggsFieldClient:
                 if email_address_id:
                     payload["email_address_id"] = email_address_id
 
-                resp = self.session.post(url, data=payload, timeout=10)
+                resp = self._clerk_post(
+                    f"/v1/client/sign_ins/{sign_in_id}/prepare_second_factor",
+                    payload,
+                )
                 
                 if resp.status_code != 200:
                     console.print(f"[red]Failed to request verification code: {resp.text}[/red]")
@@ -292,12 +308,14 @@ class HiggsFieldClient:
                 code = click.prompt("Enter the 6-digit code from your email", type=str)
                 
                 # Verify the code
-                url = f"{CLERK_BASE}/v1/client/sign_ins/{sign_in_id}/attempt_second_factor"
                 payload = {
                     "strategy": "email_code",
                     "code": code
                 }
-                resp = self.session.post(url, data=payload, timeout=10)
+                resp = self._clerk_post(
+                    f"/v1/client/sign_ins/{sign_in_id}/attempt_second_factor",
+                    payload,
+                )
                 
                 if resp.status_code != 200:
                     console.print(f"[red]Verification failed: {resp.text}[/red]")
@@ -391,7 +409,13 @@ class HiggsFieldClient:
             console.print(f"[red]Job submission error: {e}[/red]")
             return None
 
-    def _poll_job_set(self, job_set_id: str, task_text: str, max_polls: int) -> Optional[Dict[str, Any]]:
+    def _poll_job_set(
+        self,
+        job_set_id: str,
+        task_text: str,
+        max_polls: int,
+        poll_interval_s: float = 2.0,
+    ) -> Optional[Dict[str, Any]]:
         """Poll job set until completed/failed/timeout"""
         with Progress(
             SpinnerColumn(),
@@ -402,7 +426,7 @@ class HiggsFieldClient:
             poll_count = 0
 
             while poll_count < max_polls:
-                time.sleep(2)
+                time.sleep(poll_interval_s)
                 poll_count += 1
 
                 # Refresh token periodically
@@ -499,6 +523,46 @@ class HiggsFieldClient:
         console.print(f"[green]✓ Saved to: {output_path}[/green]")
         return str(output_path)
 
+    def submit_job(
+        self,
+        endpoint: str,
+        payload: Dict[str, Any],
+        output: Optional[str] = None,
+        timeout_s: int = 900,
+        poll_interval_s: float = 2.0,
+        download: bool = True,
+        fallback_ext: str = ".bin",
+    ) -> Optional[str]:
+        """Submit a model-specific job payload and optionally download its result."""
+        if timeout_s <= 0 or poll_interval_s <= 0:
+            console.print("[red]Timeout and polling interval must be greater than 0[/red]")
+            return None
+        if not self._ensure_auth():
+            return None
+        self._warmup_cloudflare()
+
+        job_set_id = self._submit_job(endpoint, payload)
+        if not job_set_id:
+            return None
+
+        status_data = self._poll_job_set(
+            job_set_id=job_set_id,
+            task_text="Waiting for completion...",
+            max_polls=max(1, int(timeout_s / poll_interval_s)),
+            poll_interval_s=poll_interval_s,
+        )
+        if not status_data:
+            return None
+
+        result_url = self._extract_result_url(status_data)
+        if not result_url:
+            console.print("[red]Could not find media URL in job response[/red]")
+            return None
+        if not download:
+            click.echo(result_url)
+            return result_url
+        return self._download_result(result_url, output=output, default_ext=fallback_ext)
+
     def _create_media_upload(self, content_type: str, source: str = "user_upload") -> Optional[Dict[str, Any]]:
         """Create media upload target via /media/batch."""
         url = f"{API_BASE}/media/batch"
@@ -543,7 +607,11 @@ class HiggsFieldClient:
         """Finalize uploaded media so it can be referenced in generation payloads."""
         url = f"{API_BASE}/media/{media_id}/upload"
         headers = {"Authorization": f"Bearer {self.jwt}"}
-        payload = {"filename": filename}
+        payload = {
+            "filename": filename,
+            "force_nsfw_check": False,
+            "force_ip_check": False,
+        }
         try:
             resp = self.session.post(url, json=payload, headers=headers, timeout=30)
             if resp.status_code == 200:
@@ -834,6 +902,16 @@ def login(email: str, password: str):
         sys.exit(1)
 
 
+@cli.command('upload-image')
+@click.argument('image', type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def upload_image(image: Path):
+    """Upload a local image and print its media_input JSON."""
+    media = HiggsFieldClient().upload_media(str(image))
+    if not media:
+        sys.exit(1)
+    click.echo(json.dumps(media))
+
+
 @cli.command()
 @click.argument('prompt')
 @click.option('--model', '-m', default='z-image', help='Model to use (z-image, soul, flux-2, gpt, nbp)')
@@ -934,6 +1012,71 @@ def gen(prompt: str, model: str, width: int, height: int, aspect_ratio: str, see
         sys.exit(0)
     else:
         sys.exit(1)
+
+
+@cli.command()
+@click.option('--model', '-m', help='Known model ID (see `hf models`)')
+@click.option('--endpoint', help='Raw endpoint path. Overrides --model.')
+@click.option('--json-file', type=click.Path(exists=True, dir_okay=False, path_type=Path), help='JSON file containing params or a full payload')
+@click.option('--json', 'json_str', help='Inline JSON containing params or a full payload')
+@click.option('--raw', is_flag=True, help='Do not wrap JSON without a top-level params key')
+@click.option('--output', '-o', help='Output file path')
+@click.option('--timeout', default=900, show_default=True, type=click.IntRange(min=1), help='Maximum wait in seconds')
+@click.option('--poll-interval', default=2.0, show_default=True, type=click.FloatRange(min=0.1), help='Polling interval in seconds')
+@click.option('--no-download', is_flag=True, help='Print the result URL without downloading it')
+def submit(
+    model: Optional[str],
+    endpoint: Optional[str],
+    json_file: Optional[Path],
+    json_str: Optional[str],
+    raw: bool,
+    output: Optional[str],
+    timeout: int,
+    poll_interval: float,
+    no_download: bool,
+):
+    """Submit a payload to any Higgsfield generation endpoint."""
+    if not endpoint and not model:
+        raise click.ClickException("Provide --model or --endpoint")
+    if (json_file is None) == (json_str is None):
+        raise click.ClickException("Provide exactly one of --json-file or --json")
+
+    normalized_model = _normalized_model_id(model) if model else None
+    model_cfg = (
+        MODELS.get(normalized_model or "")
+        or VIDEO_MODELS.get(normalized_model or "")
+    )
+    if not endpoint:
+        if not model_cfg:
+            raise click.ClickException(f"Unknown model: {model}. Run `hf models` to list available IDs.")
+        endpoint = model_cfg["endpoint"]
+    elif not endpoint.startswith("/"):
+        endpoint = f"/{endpoint}"
+
+    try:
+        data = json.loads(json_file.read_text() if json_file else (json_str or ""))
+    except (json.JSONDecodeError, OSError) as e:
+        raise click.ClickException(f"Could not read JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise click.ClickException("JSON must decode to an object")
+
+    payload = data if raw or "params" in data else {"params": data}
+    endpoint_lower = endpoint.lower()
+    is_video = normalized_model in VIDEO_MODELS or any(
+        marker in endpoint_lower for marker in ("video", "kling", "veo", "seedance")
+    )
+    fallback_ext = ".mp4" if is_video else ".bin"
+
+    result = HiggsFieldClient().submit_job(
+        endpoint=endpoint,
+        payload=payload,
+        output=output,
+        timeout_s=timeout,
+        poll_interval_s=poll_interval,
+        download=not no_download,
+        fallback_ext=fallback_ext,
+    )
+    sys.exit(0 if result else 1)
 
 
 @cli.command()

@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='higgsfield-cli',
-    version='0.1.1',
+    version='0.2.0',
     py_modules=['hf'],
     install_requires=[
         'curl-cffi>=0.7.0',
