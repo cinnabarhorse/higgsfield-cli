@@ -4,11 +4,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-A powerful command-line tool for generating images via [Higgsfield.ai](https://higgsfield.ai)'s API, built through reverse-engineering their web application.
+A powerful command-line tool for generating images (and videos) via [Higgsfield.ai](https://higgsfield.ai)'s API, built through reverse-engineering their web application.
 
 ## 🎨 What It Does
 
-Higgsfield CLI (`hf`) lets you generate AI images from your terminal using Higgsfield.ai's free tier. It bypasses Cloudflare protection using TLS fingerprinting and implements the Clerk authentication flow to access generation endpoints directly.
+Higgsfield CLI (`hf`) lets you generate AI images (and videos) from your terminal using Higgsfield.ai's free tier. It bypasses Cloudflare protection using TLS fingerprinting and implements the Clerk authentication flow to access generation endpoints directly.
 
 **Key Features:**
 - 🔐 Full authentication via Clerk (email/password + device verification)
@@ -23,7 +23,7 @@ Higgsfield CLI (`hf`) lets you generate AI images from your terminal using Higgs
 
 - **Simple Text-to-Image:** Generate images from prompts in seconds
 - **Multiple Models:** Access Z-Image, Soul (stylized), Flux-2, GPT-based models, and more
-- **Video Generation:** Support for image-to-video and text-to-video models
+- **Video Generation (advanced):** Submit video jobs via `hf submit` by passing the exact JSON payload used by the web app (model-specific params)
 - **Customization:** Control dimensions, aspect ratios, seeds for reproducibility
 - **Account Management:** Check credits, view generation history
 - **Session Persistence:** Login once, stored securely in `~/.config/hf/`
@@ -128,7 +128,7 @@ hf generate "a serene mountain landscape at sunset" [OPTIONS]
 
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
-| `--model` | `-m` | `z-image` | Model to use (see Available Models) |
+| `--model` | `-m` | `z-image` | Simple image model ID (e.g. `z-image`, `gpt`). For advanced models/video, use `hf submit`. |
 | `--width` | `-w` | `1024` | Image width in pixels |
 | `--height` | `-h` | `1024` | Image height in pixels |
 | `--aspect-ratio` | `-a` | `1:1` | Aspect ratio (1:1, 16:9, 9:16, 4:3, etc.) |
@@ -151,14 +151,14 @@ hf generate "abstract art" --seed 42
 hf generate "portrait of a cat" --output ~/Desktop/cat.png
 
 # Use a different model
-hf generate "stylized portrait" --model soul
+hf generate "cinematic portrait" --model gpt
 ```
 
 ---
 
 ### `hf models`
 
-List all available image generation models.
+List all available models (including discovered video endpoints).
 
 ```bash
 hf models
@@ -166,14 +166,15 @@ hf models
 
 **Output:**
 ```
-┌──────────┬─────────────────┬────────────────────────────────────┐
-│ ID       │ Name            │ Description                        │
-├──────────┼─────────────────┼────────────────────────────────────┤
-│ z-image  │ Z-Image         │ Simple, fast image generation      │
-│ soul     │ Soul Standard   │ Stylized generation (style_id)     │
-│ flux-2   │ Flux 2          │ Advanced model (input_images)      │
-│ gpt      │ GPT Image       │ OpenAI-based generation            │
-└──────────┴─────────────────┴────────────────────────────────────┘
+┌──────────────┬───────┬─────────────────┬────────────────────────────────────┬──────────────────────┐
+│ ID           │ Kind  │ Name            │ Description                        │ Endpoint              │
+├──────────────┼───────┼─────────────────┼────────────────────────────────────┼──────────────────────┤
+│ z-image      │ image │ Z-Image         │ Simple, fast image generation      │ /jobs/z-image         │
+│ soul         │ image │ Soul Standard   │ Stylized generation (style_id)     │ /jobs/text2image-soul │
+│ flux-2       │ image │ Flux 2          │ Advanced model (input_images)      │ /jobs/flux-2          │
+│ gpt          │ image │ GPT Image       │ OpenAI-based generation            │ /jobs/text2image-gpt  │
+│ kling        │ video │ Kling           │ Kling video model (input config)   │ /jobs/kling           │
+└──────────────┴───────┴─────────────────┴────────────────────────────────────┴──────────────────────┘
 ```
 
 ---
@@ -202,7 +203,7 @@ hf status
 
 ### `hf history`
 
-View your recent image generations.
+View your recent generations.
 
 ```bash
 hf history [--limit N]
@@ -229,9 +230,35 @@ hf history --limit 5
 
 ---
 
+### `hf submit`
+
+Submit a job to any Higgsfield generation endpoint (including video models) using a JSON payload.
+
+This is the escape hatch for models that require parameters not exposed as CLI flags yet.
+
+**Typical workflow:**
+1. In the browser, generate the video you want.
+2. In DevTools Network, find the `POST https://fnf.higgsfield.ai/jobs/<model>` request.
+3. Copy the JSON request body to `payload.json`.
+4. Run:
+
+```bash
+hf submit --model kling --json-file payload.json --timeout 1200 --output hf_video.mp4
+```
+
+If your JSON file is only the params object (no top-level `params`), `hf submit` will wrap it as `{"params": ...}` automatically. Use `--raw` to disable wrapping.
+
+Print the result URL without downloading:
+
+```bash
+hf submit --model kling --json-file payload.json --no-download
+```
+
+---
+
 ## 🎯 Available Models
 
-Higgsfield CLI supports multiple generation endpoints. **Note:** Some models require additional parameters not yet exposed in the CLI.
+Higgsfield CLI supports multiple generation endpoints. **Note:** Some models require additional parameters not exposed as CLI flags; use `hf submit` with a captured payload.
 
 ### Image Generation Models
 
@@ -259,7 +286,7 @@ Higgsfield CLI supports multiple generation endpoints. **Note:** Some models req
 | **sora2-video** | `/jobs/sora2-video` | Sora 2 video generation | Input configuration |
 | **seedance** | `/jobs/seedance` | SeeDance video model | Input configuration |
 
-**Note:** Video models are accessible via the API but require additional parameters not currently exposed in the CLI. Future versions may add full support.
+**Note:** Video models are accessible via the API but require additional parameters not exposed as CLI flags. Use `hf submit` with a captured payload for now; future versions may add first-class flags.
 
 ---
 
@@ -473,7 +500,8 @@ Contributions are welcome! Areas for improvement:
 - [ ] Add support for `style_id` parameter (Soul models)
 - [ ] Implement input image upload for Flux-2, Nano Banana models
 - [ ] Add batch generation support
-- [ ] Implement video generation commands
+- [x] Add generic job submit command (incl. video endpoints)
+- [ ] Add first-class video generation commands + input image upload
 - [x] Add proxy support for additional CF bypass
 - [ ] Better error messages and retry logic
 - [ ] Configuration file for defaults
