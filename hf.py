@@ -3,6 +3,7 @@
 Higgsfield CLI - Generate images (and videos) via Higgsfield.ai API
 """
 import json
+import mimetypes
 import os
 import sys
 import time
@@ -409,6 +410,62 @@ class HiggsFieldClient:
         # Refresh JWT (they expire in ~60s)
         return self._refresh_jwt()
 
+    def upload_image(self, image_path: Path) -> Optional[Dict[str, str]]:
+        """Upload a local image and return a media_input object for job payloads."""
+        image_path = image_path.expanduser().resolve()
+        content_type, _ = mimetypes.guess_type(image_path.name)
+        if not content_type or not content_type.startswith("image/"):
+            console.print(f"[red]Unsupported image type: {image_path.name}[/red]")
+            return None
+        if not self._ensure_auth():
+            return None
+
+        self._warmup_cloudflare()
+        headers = {"Authorization": f"Bearer {self.jwt}"}
+
+        presign_resp = self.session.post(
+            f"{API_BASE}/media/batch",
+            json={"mimetypes": [content_type], "source": "user_upload"},
+            headers=headers,
+            timeout=30,
+        )
+        if presign_resp.status_code != 200:
+            console.print(f"[red]Could not prepare upload: {presign_resp.status_code}[/red]")
+            return None
+
+        presigned = presign_resp.json()
+        media = presigned[0] if isinstance(presigned, list) and presigned else None
+        if not isinstance(media, dict) or not all(media.get(key) for key in ("id", "url", "upload_url")):
+            console.print("[red]Unexpected upload response[/red]")
+            return None
+
+        upload_resp = self.session.put(
+            media["upload_url"],
+            data=image_path.read_bytes(),
+            headers={"Content-Type": content_type},
+            timeout=120,
+        )
+        if not 200 <= upload_resp.status_code < 300:
+            console.print(f"[red]Image upload failed: {upload_resp.status_code}[/red]")
+            return None
+
+        confirm_resp = self.session.post(
+            f"{API_BASE}/media/{media['id']}/upload",
+            json={
+                "filename": image_path.name,
+                "force_nsfw_check": False,
+                "force_ip_check": False,
+            },
+            headers=headers,
+            timeout=30,
+        )
+        if not 200 <= confirm_resp.status_code < 300:
+            console.print(f"[red]Could not confirm upload: {confirm_resp.status_code}[/red]")
+            return None
+
+        console.print(f"[green]✓ Uploaded image: {image_path.name}[/green]")
+        return {"id": media["id"], "url": media["url"], "type": "media_input"}
+
     def _post_job(self, endpoint: str, payload: Dict[str, Any], verbose: bool = False) -> Optional[str]:
         """Submit a generation job. Returns job_set_id on success."""
         url = f"{API_BASE}{endpoint}"
@@ -759,6 +816,16 @@ def login(email: str, password: str):
     else:
         console.print("[red]✗ Login failed[/red]")
         sys.exit(1)
+
+
+@cli.command('upload-image')
+@click.argument('image', type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def upload_image(image: Path):
+    """Upload a local image and print its media_input JSON."""
+    media = HiggsFieldClient().upload_image(image)
+    if not media:
+        sys.exit(1)
+    click.echo(json.dumps(media))
 
 
 @cli.command()

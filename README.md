@@ -23,6 +23,7 @@ Higgsfield CLI (`hf`) lets you generate AI images (and videos) from your termina
 
 - **Simple Text-to-Image:** Generate images from prompts in seconds
 - **Multiple Models:** Access Z-Image, Soul (stylized), Flux-2, GPT-based models, and more
+- **Local Image Uploads:** Upload PNG, JPEG, WebP, and other supported image formats for image-to-video payloads
 - **Video Generation (advanced):** Submit video jobs via `hf submit` by passing the exact JSON payload used by the web app (model-specific params)
 - **Customization:** Control dimensions, aspect ratios, seeds for reproducibility
 - **Account Management:** Check credits, view generation history
@@ -227,6 +228,18 @@ hf history --limit 5
 │ 2026-02-13 13:45 │ soul    │ stylized portrait      │ completed │
 └──────────────────┴─────────┴────────────────────────┴───────────┘
 ```
+
+---
+
+### `hf upload-image <path>`
+
+Upload a local image and print the `media_input` JSON expected by Higgsfield job payloads:
+
+```bash
+hf upload-image ./reference.png
+```
+
+The uploaded media can be placed in a payload's `medias` array with a role such as `start_image` or `end_image`.
 
 ---
 
@@ -498,7 +511,7 @@ SOFTWARE.
 Contributions are welcome! Areas for improvement:
 
 - [ ] Add support for `style_id` parameter (Soul models)
-- [ ] Implement input image upload for Flux-2, Nano Banana models
+- [x] Implement local input image upload
 - [ ] Add batch generation support
 - [x] Add generic job submit command (incl. video endpoints)
 - [ ] Add first-class video generation commands + input image upload
